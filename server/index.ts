@@ -1151,8 +1151,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // 4. BODY PARSERS
 // =============================================================================
 
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: false }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: false, limit: "50mb" }));
 
 // =============================================================================
 // 5. CORS TEST ENDPOINTS (Before rate limiting)
