@@ -30,7 +30,7 @@ import { cloudinaryStorage } from "./services/cloudinary-storage";
 import {db} from './db'
 import { emailService } from './services/email-service';
 import highIntentRoutes  from "./routes/high-intent-routes";
-import billingRouter from './routes/billing';
+// import billingRouter from './routes/billing';
 
 //added
 import { schedulerService } from './services/scheduler-service';
@@ -8169,7 +8169,7 @@ app.delete("/api/user/content/images/:imageId", requireAuth, async (req: Request
   // BILLING ROUTES
   // ===========================================================================
   
-app.use('/api/billing', billingRouter);
+// app.use('/api/billing', billingRouter);
 
 
   // ===========================================================================
