@@ -916,9 +916,6 @@
 //   process.exit(1);
 // });
 
-
-
-
 import "dotenv/config";
 import express, { Request, Response, NextFunction } from "express";
 import session from "express-session";
@@ -928,6 +925,48 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { createServer } from "http";
 import { schedulerService } from "./services/scheduler-service.ts";
+
+// =============================================================================
+// MEMORY OPTIMIZATION - GARBAGE COLLECTION
+// =============================================================================
+
+// Enable manual garbage collection in production
+if (process.env.NODE_ENV === "production") {
+  console.log("🗑️ Garbage collection enabled for production");
+  
+  // Run garbage collection every 5 minutes to free memory
+  setInterval(() => {
+    if (global.gc) {
+      const memBefore = process.memoryUsage().heapUsed;
+      global.gc();
+      const memAfter = process.memoryUsage().heapUsed;
+      const freed = Math.round((memBefore - memAfter) / 1024 / 1024);
+      if (freed > 0) {
+        console.log(`♻️ Garbage collection freed ${freed}MB`);
+      }
+    }
+  }, 5 * 60 * 1000); // Every 5 minutes
+}
+
+// Memory monitoring in production
+if (process.env.NODE_ENV === "production") {
+  setInterval(() => {
+    const mem = process.memoryUsage();
+    const rss = Math.round(mem.rss / 1024 / 1024);
+    const heapUsed = Math.round(mem.heapUsed / 1024 / 1024);
+    
+    console.log(`💾 Memory: RSS=${rss}MB, Heap=${heapUsed}MB / 512MB limit`);
+    
+    // Warning if approaching memory limit
+    if (rss > 400) {
+      console.warn(`⚠️ HIGH MEMORY USAGE: ${rss}MB / 512MB`);
+      if (global.gc) {
+        console.log("🗑️ Triggering emergency garbage collection...");
+        global.gc();
+      }
+    }
+  }, 2 * 60 * 1000); // Every 2 minutes
+}
 
 // =============================================================================
 // TYPE DECLARATIONS
@@ -1393,6 +1432,64 @@ app.get("/api/session-debug", (req: Request, res: Response) => {
 });
 
 // =============================================================================
+// 12.5 MEMORY STATUS ENDPOINT
+// =============================================================================
+
+app.get("/api/memory-status", (_req: Request, res: Response) => {
+  const mem = process.memoryUsage();
+  const rss = Math.round(mem.rss / 1024 / 1024);
+  const heapUsed = Math.round(mem.heapUsed / 1024 / 1024);
+  const heapTotal = Math.round(mem.heapTotal / 1024 / 1024);
+  const external = Math.round(mem.external / 1024 / 1024);
+  
+  const status = rss > 450 ? "CRITICAL" : rss > 400 ? "WARNING" : rss > 300 ? "ELEVATED" : "OK";
+  
+  res.json({
+    status,
+    limit: "512MB (Render free tier)",
+    memory: {
+      rss: `${rss}MB`,
+      heapUsed: `${heapUsed}MB`,
+      heapTotal: `${heapTotal}MB`,
+      external: `${external}MB`,
+    },
+    percentage: `${Math.round((rss / 512) * 100)}%`,
+    gcAvailable: !!global.gc,
+    uptime: `${Math.round(process.uptime() / 60)} minutes`,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.post("/api/memory-gc", (_req: Request, res: Response) => {
+  if (!global.gc) {
+    return res.status(400).json({
+      success: false,
+      message: "Garbage collection not available. Start with --expose-gc flag.",
+    });
+  }
+  
+  const memBefore = process.memoryUsage();
+  global.gc();
+  const memAfter = process.memoryUsage();
+  
+  const freed = Math.round((memBefore.heapUsed - memAfter.heapUsed) / 1024 / 1024);
+  
+  res.json({
+    success: true,
+    message: "Garbage collection triggered",
+    freed: `${freed}MB`,
+    before: {
+      rss: `${Math.round(memBefore.rss / 1024 / 1024)}MB`,
+      heapUsed: `${Math.round(memBefore.heapUsed / 1024 / 1024)}MB`,
+    },
+    after: {
+      rss: `${Math.round(memAfter.rss / 1024 / 1024)}MB`,
+      heapUsed: `${Math.round(memAfter.heapUsed / 1024 / 1024)}MB`,
+    },
+  });
+});
+
+// =============================================================================
 // 13. LOGGING MIDDLEWARE
 // =============================================================================
 
@@ -1452,6 +1549,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
     // Health check endpoint
     app.get("/health", (_req: Request, res: Response) => {
+      const mem = process.memoryUsage();
       res.json({
         status: "healthy",
         timestamp: new Date().toISOString(),
@@ -1459,6 +1557,12 @@ app.use((req: Request, res: Response, next: NextFunction) => {
         uptime: process.uptime(),
         port: process.env.PORT || "5000",
         database: "connected",
+        memory: {
+          rss: `${Math.round(mem.rss / 1024 / 1024)}MB`,
+          heapUsed: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
+          limit: "512MB",
+          gcEnabled: !!global.gc,
+        },
         allowedOrigins: ALLOWED_ORIGINS,
         allowVercelPreviews: process.env.ALLOW_VERCEL_PREVIEWS === "true",
       });
@@ -1475,6 +1579,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
           api: "/api/*",
           corsTest: "/api/cors-test",
           sessionDebug: "/api/session-debug",
+          memoryStatus: "/api/memory-status",
+          memoryGC: "/api/memory-gc (POST)",
         },
       });
     });
@@ -1621,7 +1727,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
       log(`🧪 Test endpoints:`);
       log(`   - CORS Test: http://${host}:${port}/api/cors-test`);
       log(`   - Session Debug: http://${host}:${port}/api/session-debug`);
+      log(`   - Memory Status: http://${host}:${port}/api/memory-status`);
+      log(`   - Trigger GC: http://${host}:${port}/api/memory-gc (POST)`);
       log(`   - Health Check: http://${host}:${port}/health`);
+
+      // Memory info at startup
+      const startupMem = process.memoryUsage();
+      log(`💾 Startup memory: ${Math.round(startupMem.rss / 1024 / 1024)}MB / 512MB`);
+      log(`♻️ Garbage collection: ${global.gc ? 'ENABLED' : 'DISABLED (add --expose-gc flag)'}`);
 
       // Start scheduler after server is listening
       schedulerService.startScheduler(1);
